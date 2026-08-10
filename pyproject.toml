@@ -1,0 +1,11 @@
+[project]
+name = "xauusd-assistant"
+version = "0.1.0"
+description = "Offline deterministic multi-timeframe trading analysis core"
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.pytest.ini_options]
+pythonpath = ["src", "."]
+testpaths = ["tests"]
+addopts = "-q"

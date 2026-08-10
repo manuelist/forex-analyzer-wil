@@ -1,0 +1,21 @@
+# Instrument profiles are configuration only; no live data or credentials belong here.
+instruments:
+  XAUUSD:
+    source_symbol: TVC:GOLD
+    asset_class: metal
+    point_size: 0.01
+    confirmation_timeframes: [M15, M5]
+    refinement_timeframes: [M3, M1]
+    primary_timeframes: [H4, H1, M15, M5]
+    correlation_group: gold
+    enabled: true
+
+  EURUSD:
+    source_symbol: FX:EURUSD
+    asset_class: forex
+    point_size: 0.00001
+    confirmation_timeframes: [M15, M5]
+    refinement_timeframes: [M3, M1]
+    primary_timeframes: [H4, H1, M15, M5]
+    correlation_group: usd_major
+    enabled: false

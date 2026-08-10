@@ -1,0 +1,15 @@
+# Account policies contain no broker identifiers or credentials.
+accounts:
+  propfirm:
+    approved_instruments: [XAUUSD]
+    a_plus_max_risk_percent: 1.0
+    a_max_risk_percent: 0.5
+    execution_enabled: false
+    broker_connected: false
+
+  live:
+    approved_instruments: [EURUSD]
+    a_plus_max_risk_percent: 1.0
+    a_max_risk_percent: 0.5
+    execution_enabled: false
+    broker_connected: false

@@ -1,0 +1,9 @@
+version: 1
+execution_enabled: false
+broker_connected: false
+max_daily_loss_percent: 2.0
+A_plus:
+  max_risk_percent: 1.0
+A:
+  max_risk_percent: 0.5
+below_minimum: WAIT

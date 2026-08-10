@@ -1,0 +1,9 @@
+README.md
+pyproject.toml
+src/xauusd_assistant/__init__.py
+src/xauusd_assistant/core.py
+src/xauusd_assistant.egg-info/PKG-INFO
+src/xauusd_assistant.egg-info/SOURCES.txt
+src/xauusd_assistant.egg-info/dependency_links.txt
+src/xauusd_assistant.egg-info/top_level.txt
+tests/test_core.py

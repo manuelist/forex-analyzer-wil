@@ -1,0 +1,10 @@
+version: 1
+instrument: XAUUSD
+source: tradingview_only
+macro_timeframe: H4
+structure_timeframe: H1
+confirmation_timeframes: [M15, M5]
+refinement_timeframes: [M3, M1]
+minimum_grade: A
+require_closed_candles: true
+missing_data_action: WAIT

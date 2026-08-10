@@ -1,0 +1,5 @@
+Metadata-Version: 2.4
+Name: xauusd-assistant
+Version: 0.1.0
+Summary: Offline deterministic multi-timeframe trading analysis core
+Requires-Python: >=3.11
