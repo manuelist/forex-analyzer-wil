@@ -9,3 +9,6 @@ dependencies = []
 pythonpath = ["src", "."]
 testpaths = ["tests"]
 addopts = "-q"
+
+[tool.vercel]
+entrypoint = "api.tradingview:handler"
