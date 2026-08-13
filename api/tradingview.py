@@ -8,13 +8,19 @@ from __future__ import annotations
 
 import hmac
 import json
+import math
 import os
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
 
 REQUIRED_TIMEFRAMES = ("H4", "H1", "M15", "M5")
+ALLOWED_SYMBOLS = frozenset({"TVC:GOLD", "XAUUSD"})
+MAX_BODY_BYTES = 64 * 1024
+MAX_TIMESTAMP_AGE = timedelta(minutes=5)
+MAX_FUTURE_SKEW = timedelta(minutes=1)
 
 
 def _query_token(path: str) -> str:
@@ -29,6 +35,67 @@ def _authorized(path: str) -> bool:
     expected = os.environ.get("TRADINGVIEW_WEBHOOK_TOKEN", "")
     # An unset secret must never authorize a request, including an empty token.
     return bool(expected) and hmac.compare_digest(supplied, expected)
+
+
+def _is_plain_text(content_type: str) -> bool:
+    media_type = content_type.split(";", 1)[0].strip().lower()
+    return media_type == "text/plain"
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _parse_timestamp(value: Any) -> datetime:
+    """Parse a webhook timestamp into an aware UTC datetime."""
+
+    if isinstance(value, bool):
+        raise ValueError("timestamp must be ISO-8601 or a Unix timestamp")
+
+    if isinstance(value, (int, float)):
+        try:
+            finite = math.isfinite(value)
+        except OverflowError as exc:
+            raise ValueError("timestamp must be finite") from exc
+        if not finite:
+            raise ValueError("timestamp must be finite")
+        try:
+            return datetime.fromtimestamp(value, timezone.utc)
+        except (OverflowError, OSError, ValueError) as exc:
+            raise ValueError("timestamp is out of range") from exc
+
+    if not isinstance(value, str):
+        raise ValueError("timestamp must be ISO-8601 or a Unix timestamp")
+
+    try:
+        timestamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("timestamp must be ISO-8601") from exc
+    if timestamp.tzinfo is None or timestamp.utcoffset() is None:
+        raise ValueError("timestamp must include timezone")
+    return timestamp.astimezone(timezone.utc)
+
+
+def _validate_payload(payload: Any) -> tuple[bool, str | None]:
+    if not isinstance(payload, dict):
+        return False, "invalid_payload"
+
+    if payload.get("symbol") not in ALLOWED_SYMBOLS:
+        return False, "unsupported_symbol"
+
+    if "timestamp" not in payload:
+        return True, None
+
+    try:
+        timestamp = _parse_timestamp(payload["timestamp"])
+    except ValueError:
+        return False, "invalid_timestamp"
+
+    now = _utc_now()
+    if timestamp - now > MAX_FUTURE_SKEW or now - timestamp > MAX_TIMESTAMP_AGE:
+        return False, "stale_timestamp"
+
+    return True, None
 
 
 def _missing_timeframes(payload: dict[str, Any]) -> list[str]:
@@ -59,6 +126,7 @@ def _analysis_response(payload: Any) -> dict[str, Any]:
         return {
             "decision": "WAIT",
             "execution_enabled": False,
+            "order_attempts": 0,
             "missing": missing,
         }
 
@@ -74,10 +142,16 @@ def _analysis_response(payload: Any) -> dict[str, Any]:
         result = {"decision": "WAIT", "missing": []}
 
     result["execution_enabled"] = False
+    result["order_attempts"] = 0
     return result
 
 
-def handle_request(method: str, path: str, body: bytes) -> tuple[int, dict[str, Any]]:
+def handle_request(
+    method: str,
+    path: str,
+    body: bytes,
+    content_type: str = "application/json",
+) -> tuple[int, dict[str, Any]]:
     """Pure request handler used by Vercel and the endpoint tests."""
 
     if method.upper() != "POST":
@@ -86,10 +160,22 @@ def handle_request(method: str, path: str, body: bytes) -> tuple[int, dict[str, 
     if not _authorized(path):
         return 401, {"error": "unauthorized"}
 
+    if len(body) > MAX_BODY_BYTES:
+        return 413, {"error": "request_too_large"}
+
     try:
         payload = json.loads(body.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError):
+        # TradingView uses text/plain for alert messages that are not valid
+        # JSON. Acknowledge those deliveries safely, but do not analyze or
+        # infer an actionable signal from unstructured text.
+        if _is_plain_text(content_type):
+            return 200, _analysis_response({})
         return 400, {"error": "invalid_json"}
+
+    valid, error = _validate_payload(payload)
+    if not valid:
+        return 400, {"error": error}
 
     return 200, _analysis_response(payload)
 
@@ -111,8 +197,18 @@ class handler(BaseHTTPRequestHandler):
             content_length = int(self.headers.get("Content-Length", "0"))
         except (TypeError, ValueError):
             content_length = 0
+
+        if content_length > MAX_BODY_BYTES:
+            self._send_json(413, {"error": "request_too_large"})
+            return
+
         body = self.rfile.read(max(content_length, 0))
-        status, payload = handle_request(self.command, self.path, body)
+        status, payload = handle_request(
+            self.command,
+            self.path,
+            body,
+            self.headers.get("Content-Type", ""),
+        )
         self._send_json(status, payload)
 
     def do_POST(self) -> None:  # noqa: N802 - required by BaseHTTPRequestHandler
