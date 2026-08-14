@@ -66,6 +66,50 @@ def test_accepted_event_emits_sanitized_runtime_audit(monkeypatch, capsys):
     assert TOKEN not in lines[0]
 
 
+def test_json_payload_reports_canonical_event_metadata(monkeypatch):
+    monkeypatch.setenv("TRADINGVIEW_WEBHOOK_TOKEN", TOKEN)
+    monkeypatch.setattr(
+        "api.tradingview._utc_now",
+        lambda: datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+
+    status, response = request(
+        body={
+            "event": "zone_hit",
+            "symbol": "XAUUSD",
+            "timeframe": "M15",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "candles": [],
+        }
+    )
+
+    assert status == 200
+    assert response["payload_format"] == "JSON"
+    assert response["json_payload_required"] is False
+    assert response["canonical_symbol"] == "XAUUSD"
+    assert response["canonical_timeframe"] == "M15"
+    assert response["canonical_event_type"] == "ZONE_TOUCH"
+    assert response["canonical_event_id"] == response["audit_id"]
+
+
+def test_plain_text_payload_is_identified_without_inference(monkeypatch):
+    monkeypatch.setenv("TRADINGVIEW_WEBHOOK_TOKEN", TOKEN)
+
+    status, response = request(
+        body=b"zone_hit",
+        content_type="text/plain; charset=utf-8",
+    )
+
+    assert status == 200
+    assert response["payload_format"] == "PLAIN_TEXT"
+    assert response["json_payload_required"] is True
+    assert response["canonical_symbol"] is None
+    assert response["canonical_timeframe"] is None
+    assert response["decision"] == "WAIT"
+    assert response["execution_enabled"] is False
+    assert response["order_attempts"] == 0
+
+
 def test_invalid_token_returns_401(monkeypatch):
     monkeypatch.setenv("TRADINGVIEW_WEBHOOK_TOKEN", TOKEN)
 

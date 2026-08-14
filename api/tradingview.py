@@ -19,6 +19,12 @@ from urllib.parse import parse_qs, urlsplit
 
 REQUIRED_TIMEFRAMES = ("H4", "H1", "M15", "M5")
 ALLOWED_SYMBOLS = frozenset({"TVC:GOLD", "XAUUSD"})
+EVENT_ALIASES = {
+    "zone_hit": "ZONE_TOUCH",
+    "zone_touch": "ZONE_TOUCH",
+    "bar_close": "BAR_CLOSE",
+    "context_update": "CONTEXT_UPDATE",
+}
 MAX_BODY_BYTES = 64 * 1024
 MAX_TIMESTAMP_AGE = timedelta(minutes=5)
 MAX_FUTURE_SKEW = timedelta(minutes=1)
@@ -122,16 +128,34 @@ def _audit_id(body: bytes) -> str:
     return hashlib.sha256(body).hexdigest()
 
 
+def _canonical_metadata(payload: dict[str, Any], audit_id: str) -> dict[str, Any]:
+    raw_event = payload.get("event_type", payload.get("event"))
+    event_key = raw_event.strip().lower() if isinstance(raw_event, str) else ""
+    symbol = payload.get("symbol")
+    canonical_symbol = "XAUUSD" if symbol == "TVC:GOLD" else symbol if isinstance(symbol, str) else None
+    timeframe = payload.get("timeframe")
+    canonical_timeframe = timeframe.upper() if isinstance(timeframe, str) else None
+    return {
+        "canonical_event_id": audit_id,
+        "canonical_event_type": EVENT_ALIASES.get(event_key, event_key.upper() or None),
+        "canonical_symbol": canonical_symbol,
+        "canonical_timeframe": canonical_timeframe,
+    }
+
+
 def _emit_runtime_audit(
     payload: dict[str, Any],
     analysis: dict[str, Any],
     audit_id: str,
+    payload_format: str,
 ) -> None:
     """Emit only non-sensitive analysis metadata to the Vercel runtime log."""
 
+    metadata = _canonical_metadata(payload, audit_id)
     record = {
         "audit": "TRADINGVIEW_ANALYSIS",
         "audit_id": audit_id,
+        "payload_format": payload_format,
         "event": payload.get("event", payload.get("event_type", "UNSPECIFIED")),
         "symbol": payload.get("symbol"),
         "timeframe": payload.get("timeframe"),
@@ -140,16 +164,25 @@ def _emit_runtime_audit(
         "missing": analysis.get("missing", []),
         "execution_enabled": False,
         "order_attempts": 0,
+        **metadata,
     }
     print(json.dumps(record, separators=(",", ":")), flush=True)
 
 
-def _audited_analysis_response(payload: dict[str, Any], body: bytes) -> dict[str, Any]:
+def _audited_analysis_response(
+    payload: dict[str, Any],
+    body: bytes,
+    payload_format: str,
+) -> dict[str, Any]:
     analysis = _analysis_response(payload)
     audit_id = _audit_id(body)
-    _emit_runtime_audit(payload, analysis, audit_id)
+    metadata = _canonical_metadata(payload, audit_id)
+    _emit_runtime_audit(payload, analysis, audit_id, payload_format)
     analysis["audit_id"] = audit_id
     analysis["runtime_audit_emitted"] = True
+    analysis["payload_format"] = payload_format
+    analysis["json_payload_required"] = payload_format != "JSON"
+    analysis.update(metadata)
     return analysis
 
 
@@ -208,14 +241,14 @@ def handle_request(
         # JSON. Acknowledge those deliveries safely, but do not analyze or
         # infer an actionable signal from unstructured text.
         if _is_plain_text(content_type):
-            return 200, _audited_analysis_response({}, body)
+            return 200, _audited_analysis_response({}, body, "PLAIN_TEXT")
         return 400, {"error": "invalid_json"}
 
     valid, error = _validate_payload(payload)
     if not valid:
         return 400, {"error": error}
 
-    return 200, _audited_analysis_response(payload, body)
+    return 200, _audited_analysis_response(payload, body, "JSON")
 
 
 class handler(BaseHTTPRequestHandler):
