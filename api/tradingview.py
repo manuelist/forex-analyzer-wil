@@ -6,8 +6,8 @@ MT5, or any other external service.
 
 from __future__ import annotations
 
-import hmac
 import hashlib
+import hmac
 import json
 import math
 import os
@@ -15,6 +15,8 @@ from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
+
+from journal.bridge import build_envelope, deliver_envelope
 
 
 REQUIRED_TIMEFRAMES = ("H4", "H1", "M15", "M5")
@@ -40,7 +42,6 @@ def _query_token(path: str) -> str:
 def _authorized(path: str) -> bool:
     supplied = _query_token(path)
     expected = os.environ.get("TRADINGVIEW_WEBHOOK_TOKEN", "")
-    # An unset secret must never authorize a request, including an empty token.
     return bool(expected) and hmac.compare_digest(supplied, expected)
 
 
@@ -143,13 +144,33 @@ def _canonical_metadata(payload: dict[str, Any], audit_id: str) -> dict[str, Any
     }
 
 
+def _journal_delivery(
+    payload: dict[str, Any],
+    analysis: dict[str, Any],
+    audit_id: str,
+    payload_format: str,
+) -> dict[str, Any]:
+    envelope = build_envelope(
+        payload,
+        analysis,
+        audit_id=audit_id,
+        payload_format=payload_format,
+    )
+    return deliver_envelope(
+        envelope,
+        url=os.environ.get("TRADINGVIEW_JOURNAL_URL", ""),
+        secret=os.environ.get("TRADINGVIEW_JOURNAL_SECRET", ""),
+    )
+
+
 def _emit_runtime_audit(
     payload: dict[str, Any],
     analysis: dict[str, Any],
     audit_id: str,
     payload_format: str,
+    journal_result: dict[str, Any],
 ) -> None:
-    """Emit only non-sensitive analysis metadata to the Vercel runtime log."""
+    """Emit only non-sensitive analysis and delivery metadata."""
 
     metadata = _canonical_metadata(payload, audit_id)
     record = {
@@ -164,6 +185,9 @@ def _emit_runtime_audit(
         "missing": analysis.get("missing", []),
         "execution_enabled": False,
         "order_attempts": 0,
+        "journal_status": journal_result["status"],
+        "journal_accepted": journal_result["accepted"],
+        "durable_write_verified": journal_result["durable_write_verified"],
         **metadata,
     }
     print(json.dumps(record, separators=(",", ":")), flush=True)
@@ -177,11 +201,15 @@ def _audited_analysis_response(
     analysis = _analysis_response(payload)
     audit_id = _audit_id(body)
     metadata = _canonical_metadata(payload, audit_id)
-    _emit_runtime_audit(payload, analysis, audit_id, payload_format)
+    journal_result = _journal_delivery(payload, analysis, audit_id, payload_format)
+    _emit_runtime_audit(payload, analysis, audit_id, payload_format, journal_result)
     analysis["audit_id"] = audit_id
     analysis["runtime_audit_emitted"] = True
     analysis["payload_format"] = payload_format
     analysis["json_payload_required"] = payload_format != "JSON"
+    analysis["journal_status"] = journal_result["status"]
+    analysis["journal_accepted"] = journal_result["accepted"]
+    analysis["durable_write_verified"] = journal_result["durable_write_verified"]
     analysis.update(metadata)
     return analysis
 
@@ -201,8 +229,6 @@ def _analysis_response(payload: Any) -> dict[str, Any]:
             "missing": missing,
         }
 
-    # Use the existing offline processor when a complete candle batch is
-    # supplied. The fallback remains WAIT and never fabricates evidence.
     try:
         from workflow.process_event import process
 
@@ -237,9 +263,6 @@ def handle_request(
     try:
         payload = json.loads(body.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError):
-        # TradingView uses text/plain for alert messages that are not valid
-        # JSON. Acknowledge those deliveries safely, but do not analyze or
-        # infer an actionable signal from unstructured text.
         if _is_plain_text(content_type):
             return 200, _audited_analysis_response({}, body, "PLAIN_TEXT")
         return 400, {"error": "invalid_json"}
@@ -313,8 +336,6 @@ class handler(BaseHTTPRequestHandler):
         self._method_not_allowed()
 
     def __getattr__(self, name: str) -> Any:
-        # BaseHTTPRequestHandler otherwise returns 501 for an unknown HTTP
-        # verb. Vercel should expose the endpoint as POST-only and return 405.
         if name.startswith("do_"):
             return self._method_not_allowed
         raise AttributeError(name)

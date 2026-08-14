@@ -53,6 +53,17 @@ PATH=/data/.local/bin:$PATH pytest -q
 }
 ```
 
+## Durable journal bridge
+
+The Vercel handler always emits sanitized runtime audit metadata. It can optionally forward a signed, sanitized envelope to the local journal bridge when both environment variables are configured:
+
+```text
+TRADINGVIEW_JOURNAL_URL=https://<approved-public-https-journal-endpoint>/journal/tradingview
+TRADINGVIEW_JOURNAL_SECRET=<private bridge secret>
+```
+
+The handler does not request or log either value. Without both variables, the response explicitly reports `journal_status: NOT_CONFIGURED` and `durable_write_verified: false`. A remote HTTP success is reported as `ACCEPTED`, but never treated as proof of durable storage. The local `xauusd_bot.journal_server` verifies the HMAC signature, rejects sensitive fields, deduplicates by `event_id`, and fsyncs an append-only JSONL record. No public tunnel or continuous service is enabled automatically.
+
 ## Current status
 
-The modular deterministic foundation, event parser, replay loader, state machine, evidence contract, risk validator, alert rules, journal models, and statistics are implemented and tested. Public DNS/HTTPS delivery, TradingView alert creation, and live alert-to-analysis wiring remain deployment tasks.
+The modular deterministic foundation, event parser, replay loader, state machine, evidence contract, risk validator, alert rules, journal models, sanitized journal bridge, and statistics are implemented and tested. Public DNS/HTTPS delivery, TradingView alert creation, and the optional Vercel-to-local journal connection remain deployment/configuration tasks.

@@ -28,6 +28,8 @@ def test_valid_token_returns_success(monkeypatch):
     assert response["decision"] == "WAIT"
     assert response["execution_enabled"] is False
     assert response["order_attempts"] == 0
+    assert response["journal_status"] == "NOT_CONFIGURED"
+    assert response["durable_write_verified"] is False
 
 
 def test_accepted_event_emits_sanitized_runtime_audit(monkeypatch, capsys):
