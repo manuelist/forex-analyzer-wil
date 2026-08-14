@@ -30,6 +30,42 @@ def test_valid_token_returns_success(monkeypatch):
     assert response["order_attempts"] == 0
 
 
+def test_accepted_event_emits_sanitized_runtime_audit(monkeypatch, capsys):
+    monkeypatch.setenv("TRADINGVIEW_WEBHOOK_TOKEN", TOKEN)
+    monkeypatch.setattr(
+        "api.tradingview._utc_now",
+        lambda: datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+
+    status, response = request(
+        body={
+            "event": "zone_hit",
+            "symbol": "XAUUSD",
+            "timeframe": "M15",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "price": 2000.0,
+            "candles": [],
+        }
+    )
+
+    assert status == 200
+    assert response["runtime_audit_emitted"] is True
+    assert len(response["audit_id"]) == 64
+    lines = [line for line in capsys.readouterr().out.splitlines() if line.strip()]
+    assert len(lines) == 1
+    audit = json.loads(lines[0])
+    assert audit["audit"] == "TRADINGVIEW_ANALYSIS"
+    assert audit["symbol"] == "XAUUSD"
+    assert audit["timeframe"] == "M15"
+    assert audit["event"] == "zone_hit"
+    assert audit["decision"] == "WAIT"
+    assert audit["execution_enabled"] is False
+    assert audit["order_attempts"] == 0
+    assert "price" not in audit
+    assert "candles" not in audit
+    assert TOKEN not in lines[0]
+
+
 def test_invalid_token_returns_401(monkeypatch):
     monkeypatch.setenv("TRADINGVIEW_WEBHOOK_TOKEN", TOKEN)
 

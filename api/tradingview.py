@@ -7,6 +7,7 @@ MT5, or any other external service.
 from __future__ import annotations
 
 import hmac
+import hashlib
 import json
 import math
 import os
@@ -115,6 +116,43 @@ def _missing_timeframes(payload: dict[str, Any]) -> list[str]:
     return [timeframe for timeframe in REQUIRED_TIMEFRAMES if timeframe not in present]
 
 
+def _audit_id(body: bytes) -> str:
+    """Return a stable opaque identifier without exposing request contents."""
+
+    return hashlib.sha256(body).hexdigest()
+
+
+def _emit_runtime_audit(
+    payload: dict[str, Any],
+    analysis: dict[str, Any],
+    audit_id: str,
+) -> None:
+    """Emit only non-sensitive analysis metadata to the Vercel runtime log."""
+
+    record = {
+        "audit": "TRADINGVIEW_ANALYSIS",
+        "audit_id": audit_id,
+        "event": payload.get("event", payload.get("event_type", "UNSPECIFIED")),
+        "symbol": payload.get("symbol"),
+        "timeframe": payload.get("timeframe"),
+        "timestamp": payload.get("timestamp"),
+        "decision": analysis.get("decision", "WAIT"),
+        "missing": analysis.get("missing", []),
+        "execution_enabled": False,
+        "order_attempts": 0,
+    }
+    print(json.dumps(record, separators=(",", ":")), flush=True)
+
+
+def _audited_analysis_response(payload: dict[str, Any], body: bytes) -> dict[str, Any]:
+    analysis = _analysis_response(payload)
+    audit_id = _audit_id(body)
+    _emit_runtime_audit(payload, analysis, audit_id)
+    analysis["audit_id"] = audit_id
+    analysis["runtime_audit_emitted"] = True
+    return analysis
+
+
 def _analysis_response(payload: Any) -> dict[str, Any]:
     """Build a safe acknowledgement from supplied JSON only."""
 
@@ -170,14 +208,14 @@ def handle_request(
         # JSON. Acknowledge those deliveries safely, but do not analyze or
         # infer an actionable signal from unstructured text.
         if _is_plain_text(content_type):
-            return 200, _analysis_response({})
+            return 200, _audited_analysis_response({}, body)
         return 400, {"error": "invalid_json"}
 
     valid, error = _validate_payload(payload)
     if not valid:
         return 400, {"error": error}
 
-    return 200, _analysis_response(payload)
+    return 200, _audited_analysis_response(payload, body)
 
 
 class handler(BaseHTTPRequestHandler):
